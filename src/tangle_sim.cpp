@@ -9,9 +9,7 @@
 #include <cmath>
 #include <limits>
 
-// ----------------------------
-//  Data structures
-// ----------------------------
+// Data structures
 
 struct TxNode {
     int id;
@@ -40,39 +38,26 @@ struct MessageCompare {
     }
 };
 
-// ----------------------------
-//  Global-ish state per run
-// ----------------------------
+// Global state for a run
 
 static std::vector<TxNode> g_nodes;
-static std::unordered_set<int> g_globalTips;   // global tips (true DAG width)
+static std::unordered_set<int> g_globalTips;   // true DAG tips
 
-// ----------------------------
-//  Helper functions
-// ----------------------------
-
+// Update a process when it learns about a node
 static void processReceiveNode(Process &proc, int nodeId) {
-    // If already known, nothing to do
     if (!proc.knownNodes.insert(nodeId).second) return;
 
-    // Parents that are known can no longer be tips in this local view
+    // Known parents are no longer tips in this view
     for (int p : g_nodes[nodeId].parents) {
-        if (proc.knownNodes.count(p)) {
-            proc.tipSet.erase(p);
-        }
+        if (proc.knownNodes.count(p)) proc.tipSet.erase(p);
     }
 
-    // If this node has no known children, it's a tip in this process's view
+    // If no known children, this node is a tip locally
     bool hasKnownChild = false;
     for (int c : g_nodes[nodeId].children) {
-        if (proc.knownNodes.count(c)) {
-            hasKnownChild = true;
-            break;
-        }
+        if (proc.knownNodes.count(c)) { hasKnownChild = true; break; }
     }
-    if (!hasKnownChild) {
-        proc.tipSet.insert(nodeId);
-    }
+    if (!hasKnownChild) proc.tipSet.insert(nodeId);
 }
 
 // Uniform random tip from process's local tip set
@@ -155,6 +140,7 @@ static std::vector<int> selectTips(
 }
 
 // Broadcast node to all other processes with random delay
+// Broadcast a node to other processes with random delays
 static void broadcastNode(
     int nodeId,
     int senderId,
@@ -168,17 +154,32 @@ static void broadcastNode(
     for (Process &p : procs) {
         if (p.id == senderId) continue;
         double delay = rng.uniform_double(minDelay, maxDelay);
-        Message m;
-        m.nodeId = nodeId;
-        m.receiverId = p.id;
-        m.deliverTime = now + delay;
+        Message m{now + delay, p.id, nodeId};
         pq.push(m);
     }
 }
 
-// ----------------------------
-//  Simulation
-// ----------------------------
+// Write a single metrics row to output stream
+static void logMetrics(std::ofstream &out, double now, const std::vector<Process> &procs) {
+    int totalLocalTips = 0;
+    int minLocalTips = std::numeric_limits<int>::max();
+    int maxLocalTips = 0;
+    for (const Process &pr : procs) {
+        int c = static_cast<int>(pr.tipSet.size());
+        totalLocalTips += c;
+        if (c < minLocalTips) minLocalTips = c;
+        if (c > maxLocalTips) maxLocalTips = c;
+    }
+    double avgLocalTips = static_cast<double>(totalLocalTips) / procs.size();
+    int totalNodes = static_cast<int>(g_nodes.size());
+    int globalTips = static_cast<int>(g_globalTips.size());
+
+    out << now << "," << globalTips << "," << avgLocalTips << ","
+        << minLocalTips << "," << maxLocalTips << "," << totalNodes << "\n";
+}
+
+
+// Simulation
 
 void runTangleSimulation(
     int numProcesses,

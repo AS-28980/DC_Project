@@ -20,7 +20,7 @@ struct RNG {
     }
 };
 
-// Weighted random choice: returns index into weights
+// Return index chosen from weights (or uniform if weights non-positive)
 inline int weighted_choice(const std::vector<double> &weights, RNG &rng) {
     if (weights.empty()) return -1;
 

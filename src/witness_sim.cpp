@@ -8,9 +8,7 @@
 #include <iostream>
 #include <algorithm>
 
-// ----------------------------
-//  Data structures
-// ----------------------------
+// Data structures
 
 struct WNode {
     int id;
@@ -41,23 +39,16 @@ struct WMessageCompare {
     }
 };
 
-// ----------------------------
-//  Global-ish state per run
-// ----------------------------
+// Global state for a run
 
 static std::vector<WNode> g_wnodes;
 static std::unordered_set<int> g_globalLeaves;
 static int g_numUsers = 0;
 
-// ----------------------------
-//  Helper functions
-// ----------------------------
+// Helpers
+static void processReceiveBlock(WProcess &proc, int nodeId) { proc.knownBlocks.insert(nodeId); }
 
-static void processReceiveBlock(WProcess &proc, int nodeId) {
-    proc.knownBlocks.insert(nodeId);
-}
-
-// Broadcast helper
+// Broadcast a block with randomized delivery times
 static void broadcastNode(
     int nodeId,
     int senderId,
@@ -71,16 +62,12 @@ static void broadcastNode(
     for (WProcess &p : procs) {
         if (p.id == senderId) continue;
         double delay = rng.uniform_double(minDelay, maxDelay);
-        WMessage m;
-        m.receiverId = p.id;
-        m.nodeId = nodeId;
-        m.deliverTime = now + delay;
+        WMessage m{now + delay, p.id, nodeId};
         pq.push(m);
     }
 }
 
-// Select witnesses based on local knowledge:
-// up to maxWitnesses latest blocks from other users
+// Select up to maxWitnesses most recent blocks (not from the requester)
 static std::vector<int> selectWitnesses(
     const WProcess &proc,
     int maxWitnesses
@@ -128,9 +115,7 @@ static std::vector<int> selectWitnesses(
     return witnesses;
 }
 
-// ----------------------------
-//  Simulation
-// ----------------------------
+// Simulation
 
 void runWitnessSimulation(
     int numUsers,
@@ -179,6 +164,12 @@ void runWitnessSimulation(
         return;
     }
     out << "time,global_leaves,total_nodes\n";
+
+    auto logMetrics = [&](double t) {
+        int leaves = static_cast<int>(g_globalLeaves.size());
+        int totalNodes = static_cast<int>(g_wnodes.size());
+        out << t << "," << leaves << "," << totalNodes << "\n";
+    };
 
     while (now <= simDuration) {
         // 1) Deliver messages
@@ -240,10 +231,8 @@ void runWitnessSimulation(
             }
         }
 
-        // 3) Log global width (number of leaves) and total nodes
-        int leaves = static_cast<int>(g_globalLeaves.size());
-        int totalNodes = static_cast<int>(g_wnodes.size());
-        out << now << "," << leaves << "," << totalNodes << "\n";
+        // 3) Log metrics
+        logMetrics(now);
 
         now += dt;
     }
