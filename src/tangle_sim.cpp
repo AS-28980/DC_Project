@@ -14,7 +14,7 @@
 struct TxNode {
     int id;
     double timestamp;
-    int height;                 // distance from genesis (approx depth)
+    int height;
 
     std::vector<int> parents;
     std::vector<int> children;
@@ -22,8 +22,8 @@ struct TxNode {
 
 struct Process {
     int id;
-    std::unordered_set<int> knownNodes;  // ids
-    std::unordered_set<int> tipSet;      // tips in local view
+    std::unordered_set<int> knownNodes;
+    std::unordered_set<int> tipSet;
 };
 
 struct Message {
@@ -34,25 +34,26 @@ struct Message {
 
 struct MessageCompare {
     bool operator()(const Message &a, const Message &b) const {
-        return a.deliverTime > b.deliverTime; // min-heap by time
+        return a.deliverTime > b.deliverTime;
     }
 };
 
-// Global state for a run
+// Global state
 
 static std::vector<TxNode> g_nodes;
-static std::unordered_set<int> g_globalTips;   // true DAG tips
+static std::unordered_set<int> g_globalTips;
 
-// Update a process when it learns about a node
+// message overhead (new metric)
+static long long g_messagesSent = 0;
+
+// Update when process receives node
 static void processReceiveNode(Process &proc, int nodeId) {
     if (!proc.knownNodes.insert(nodeId).second) return;
 
-    // Known parents are no longer tips in this view
     for (int p : g_nodes[nodeId].parents) {
         if (proc.knownNodes.count(p)) proc.tipSet.erase(p);
     }
 
-    // If no known children, this node is a tip locally
     bool hasKnownChild = false;
     for (int c : g_nodes[nodeId].children) {
         if (proc.knownNodes.count(c)) { hasKnownChild = true; break; }
@@ -60,12 +61,9 @@ static void processReceiveNode(Process &proc, int nodeId) {
     if (!hasKnownChild) proc.tipSet.insert(nodeId);
 }
 
-// Uniform random tip from process's local tip set
+// Uniform random tip
 static int uniformRandomTip(const Process &proc, RNG &rng) {
-    if (proc.tipSet.empty()) {
-        // Fallback: if no tips known, attach to genesis
-        return 0;
-    }
+    if (proc.tipSet.empty()) return 0;
     int n = static_cast<int>(proc.tipSet.size());
     int k = rng.uniform_int(0, n - 1);
     auto it = proc.tipSet.begin();
@@ -73,10 +71,9 @@ static int uniformRandomTip(const Process &proc, RNG &rng) {
     return *it;
 }
 
-// Biased random walk from genesis using local view:
-// bias towards higher height children.
+// Biased random walk
 static int biasedRandomWalk(const Process &proc, RNG &rng, double alpha) {
-    int current = 0;  // genesis
+    int current = 0;
 
     while (true) {
         const auto &children = g_nodes[current].children;
@@ -89,14 +86,13 @@ static int biasedRandomWalk(const Process &proc, RNG &rng, double alpha) {
         }
 
         if (knownChildren.empty()) {
-            return current; // leaf in local view
+            return current;
         }
 
         std::vector<double> weights(knownChildren.size());
         for (std::size_t i = 0; i < knownChildren.size(); ++i) {
             int childId = knownChildren[i];
             int h = g_nodes[childId].height;
-            // Bias towards higher height (deeper nodes): exp(alpha * h)
             weights[i] = std::exp(alpha * static_cast<double>(h));
         }
 
@@ -124,7 +120,7 @@ static std::vector<int> selectTips(
             tip = uniformRandomTip(proc, rng);
         } else if (mode == TipSelectionMode::MCMC_ONLY) {
             tip = biasedRandomWalk(proc, rng, alphaHigh);
-        } else { // HYBRID
+        } else {
             double r = rng.uniform_double(0.0, 1.0);
             if (r < securityBias) {
                 tip = biasedRandomWalk(proc, rng, alphaHigh);
@@ -139,8 +135,7 @@ static std::vector<int> selectTips(
     return tips;
 }
 
-// Broadcast node to all other processes with random delay
-// Broadcast a node to other processes with random delays
+// Broadcast
 static void broadcastNode(
     int nodeId,
     int senderId,
@@ -156,28 +151,10 @@ static void broadcastNode(
         double delay = rng.uniform_double(minDelay, maxDelay);
         Message m{now + delay, p.id, nodeId};
         pq.push(m);
+
+        g_messagesSent += 1;
     }
 }
-
-// Write a single metrics row to output stream
-static void logMetrics(std::ofstream &out, double now, const std::vector<Process> &procs) {
-    int totalLocalTips = 0;
-    int minLocalTips = std::numeric_limits<int>::max();
-    int maxLocalTips = 0;
-    for (const Process &pr : procs) {
-        int c = static_cast<int>(pr.tipSet.size());
-        totalLocalTips += c;
-        if (c < minLocalTips) minLocalTips = c;
-        if (c > maxLocalTips) maxLocalTips = c;
-    }
-    double avgLocalTips = static_cast<double>(totalLocalTips) / procs.size();
-    int totalNodes = static_cast<int>(g_nodes.size());
-    int globalTips = static_cast<int>(g_globalTips.size());
-
-    out << now << "," << globalTips << "," << avgLocalTips << ","
-        << minLocalTips << "," << maxLocalTips << "," << totalNodes << "\n";
-}
-
 
 // Simulation
 
@@ -196,8 +173,9 @@ void runTangleSimulation(
     RNG rng(seed);
     g_nodes.clear();
     g_globalTips.clear();
+    g_messagesSent = 0;
 
-    // Create genesis tx
+    // Genesis
     TxNode genesis;
     genesis.id = 0;
     genesis.timestamp = 0.0;
@@ -205,7 +183,7 @@ void runTangleSimulation(
     g_nodes.push_back(genesis);
     g_globalTips.insert(0);
 
-    // Create processes
+    // Processes
     std::vector<Process> procs(numProcesses);
     for (int i = 0; i < numProcesses; ++i) {
         procs[i].id = i;
@@ -213,26 +191,25 @@ void runTangleSimulation(
         procs[i].tipSet.insert(0);
     }
 
-    // Message queue
     std::priority_queue<Message, std::vector<Message>, MessageCompare> pq;
 
     double dt = 1.0;
     double now = 0.0;
 
-    // Probability of tx per process per step
     double txProb = lambdaPerProcess * dt;
-    if (txProb > 1.0) txProb = 1.0; // clamp
+    if (txProb > 1.0) txProb = 1.0;
 
     std::ofstream out(outputPath);
     if (!out) {
         std::cerr << "Failed to open output file: " << outputPath << "\n";
         return;
     }
-    // global_tips = true DAG width; local_* = width as seen by processes
-    out << "time,global_tips,avg_local_tips,min_local_tips,max_local_tips,total_nodes\n";
+
+    out << "time,global_tips,avg_local_tips,min_local_tips,max_local_tips,"
+           "total_nodes,tip_ratio,messages_sent\n";
 
     while (now <= simDuration) {
-        // 1) Deliver messages due by 'now'
+        // Deliver messages
         while (!pq.empty() && pq.top().deliverTime <= now) {
             Message m = pq.top();
             pq.pop();
@@ -242,7 +219,7 @@ void runTangleSimulation(
             processReceiveNode(pr, m.nodeId);
         }
 
-        // 2) Each process may generate a transaction this step
+        // Create transactions
         for (Process &pr : procs) {
             double r = rng.uniform_double(0.0, 1.0);
             if (r < txProb) {
@@ -251,11 +228,9 @@ void runTangleSimulation(
                 node.id = newId;
                 node.timestamp = now;
 
-                // Select two tips in local view
                 auto tips = selectTips(pr, rng, mode, securityBias, alphaHigh, 2);
                 node.parents = tips;
 
-                // height = 1 + max parent height
                 int maxH = 0;
                 for (int p : tips) {
                     int h = g_nodes[p].height;
@@ -265,24 +240,20 @@ void runTangleSimulation(
 
                 g_nodes.push_back(node);
 
-                // Update parents' children and global tips
                 for (int p : tips) {
                     g_nodes[p].children.push_back(newId);
                     g_globalTips.erase(p);
                 }
 
-                // New node is a global tip
                 g_globalTips.insert(newId);
 
-                // Sender learns its own node immediately
                 processReceiveNode(pr, newId);
 
-                // Broadcast to others
                 broadcastNode(newId, pr.id, procs, pq, rng, now, minDelay, maxDelay);
             }
         }
 
-        // 3) Log metrics: global width + local tip statistics
+        // Metrics
         int totalLocalTips = 0;
         int minLocalTips = std::numeric_limits<int>::max();
         int maxLocalTips = 0;
@@ -298,14 +269,19 @@ void runTangleSimulation(
         int totalNodes = static_cast<int>(g_nodes.size());
         int globalTips = static_cast<int>(g_globalTips.size());
 
+        double tipRatio = (totalNodes > 0 ? 
+            (double)globalTips / (double)totalNodes : 0.0);
+
         out << now << ","
             << globalTips << ","
             << avgLocalTips << ","
             << minLocalTips << ","
             << maxLocalTips << ","
-            << totalNodes << "\n";
+            << totalNodes << ","
+            << tipRatio << ","
+            << g_messagesSent
+            << "\n";
 
-        // Light progress print so you know it's not hung
         if (static_cast<int>(now) % 1000 == 0) {
             std::cout << "[Tangle] time=" << now
                       << " total_nodes=" << totalNodes

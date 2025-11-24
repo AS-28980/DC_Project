@@ -44,9 +44,12 @@ struct WMessageCompare {
 static std::vector<WNode> g_wnodes;
 static std::unordered_set<int> g_globalLeaves;
 static int g_numUsers = 0;
+static long long g_messagesSent = 0;
 
 // Helpers
-static void processReceiveBlock(WProcess &proc, int nodeId) { proc.knownBlocks.insert(nodeId); }
+static void processReceiveBlock(WProcess &proc, int nodeId) { 
+    proc.knownBlocks.insert(nodeId); 
+}
 
 // Broadcast a block with randomized delivery times
 static void broadcastNode(
@@ -64,6 +67,8 @@ static void broadcastNode(
         double delay = rng.uniform_double(minDelay, maxDelay);
         WMessage m{now + delay, p.id, nodeId};
         pq.push(m);
+
+        g_messagesSent++;
     }
 }
 
@@ -128,9 +133,11 @@ void runWitnessSimulation(
     const std::string &outputPath
 ) {
     RNG rng(seed);
+
     g_wnodes.clear();
     g_globalLeaves.clear();
     g_numUsers = numUsers;
+    g_messagesSent = 0;
 
     // Create processes/users
     std::vector<WProcess> procs(numUsers);
@@ -163,12 +170,21 @@ void runWitnessSimulation(
         std::cerr << "Failed to open output file: " << outputPath << "\n";
         return;
     }
-    out << "time,global_leaves,total_nodes\n";
+
+    out << "time,global_leaves,total_nodes,leaf_ratio,messages_sent\n";
 
     auto logMetrics = [&](double t) {
         int leaves = static_cast<int>(g_globalLeaves.size());
         int totalNodes = static_cast<int>(g_wnodes.size());
-        out << t << "," << leaves << "," << totalNodes << "\n";
+        double leafRatio = (totalNodes > 0) ? 
+                           (double)leaves / (double)totalNodes : 0.0;
+
+        out << t << "," 
+            << leaves << "," 
+            << totalNodes << ","
+            << leafRatio << ","
+            << g_messagesSent
+            << "\n";
     };
 
     while (now <= simDuration) {
@@ -238,5 +254,6 @@ void runWitnessSimulation(
     }
 
     std::cout << "Witness simulation finished. Total nodes: "
-              << g_wnodes.size() << ". Output: " << outputPath << "\n";
+              << g_wnodes.size() 
+              << ". Output: " << outputPath << "\n";
 }
